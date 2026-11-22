@@ -1,71 +1,117 @@
 # Logging and Monitoring Checklist
 
-What to log, how to protect it, and what to alert on. Use it during design reviews and before go-live.
+What to log, what to keep out of logs, how to protect logs, and what to alert on. Aligned with the OWASP Logging Cheat Sheet and OWASP Top 10 A09.
 
-## What to log
+## 1. Security events to log
 
-- [ ] **Authentication events**: Log successful and failed logins, MFA challenges, password resets, and lockouts.
-  - **Why it matters:** These are the first signals of credential stuffing and account takeover.
-  - **Secure default:** Include user ID, source IP, user agent, result, and timestamp in UTC.
+- [ ] **Authentication**: Login success and failure, logout, MFA challenge and result, MFA enrollment and removal, passkey registration.
+  - **Fields:** user ID, auth method, result, failure reason (internal), source IP, user agent, device ID, timestamp.
 
-- [ ] **Authorization failures**: Log denied access attempts with the resource and action requested.
-  - **Why it matters:** Repeated 403s against different object IDs usually mean someone is probing.
-  - **Secure default:** Structured log entry per denial, sampled only if volume is extreme.
+- [ ] **Account changes**: Password change and reset request, email change, phone change, recovery code use, account deletion.
 
-- [ ] **Admin and sensitive actions**: Role changes, permission grants, config changes, data exports, and key operations.
-  - **Why it matters:** You need to answer "who changed this and when" during an incident.
-  - **Secure default:** Append-only audit log separate from app debug logs.
+- [ ] **Authorization failures**: Every 403 with caller, route, action, and target object ID.
+  - **Why it matters:** Repeated denials across many object IDs are the clearest sign of someone probing access control.
 
-- [ ] **Input validation and security control events**: WAF blocks, CSP reports, rate limit hits, and rejected uploads.
-  - **Why it matters:** Shows which controls are firing and whether they are tuned right.
-  - **Secure default:** Route to the same pipeline as app logs with a clear event type.
+- [ ] **Privilege changes**: Role grants and removals, group membership changes, API key creation and revocation, impersonation start and end.
 
-## What not to log
+- [ ] **Sensitive data access**: Exports, bulk downloads, report generation, viewing of highly sensitive records (health, financial, identity documents).
 
-- [ ] **No secrets or credentials in logs**: Passwords, tokens, API keys, session IDs, and private keys are never logged.
-  - **Why it matters:** Logs get wide read access and long retention. Secrets in logs are leaked secrets.
-  - **Secure default:** Redaction filters in the logging library. Test them in CI.
+- [ ] **Admin and config changes**: Feature flag changes, security settings, SSO config, webhook endpoints, integrations.
 
-- [ ] **PII minimized**: Log user IDs instead of names, emails, or card numbers. Mask what you must keep.
-  - **Why it matters:** Logs fall under privacy rules (GDPR and similar) like any other data store.
-  - **Secure default:** Documented field allowlist for log events.
+- [ ] **Input validation and control events**: Schema validation rejects, WAF blocks, rate limit hits, CSRF failures, file upload rejections, CSP violation reports.
 
-## Log format and integrity
+- [ ] **Business events with fraud risk**: Payouts, refunds, gift card redemptions, coupon use, changes to bank details.
 
-- [ ] **Structured logs**: JSON or another structured format with consistent field names.
-  - **Why it matters:** Free-text logs are slow to search and hard to alert on.
-  - **Secure default:** Shared schema across services (for example, ECS or OpenTelemetry semantic conventions).
+- [ ] **Application errors**: Unhandled exceptions with stack traces (server-side only) and correlation ID.
 
-- [ ] **Correlation IDs**: Every request carries a trace or request ID across services.
-  - **Why it matters:** Lets you follow one request through the whole system during an incident.
-  - **Secure default:** W3C Trace Context headers, propagated by default.
+- [ ] **System events**: Deploys, config changes, scaling events, service start and stop.
 
-- [ ] **Log injection prevented**: Encode or strip newlines and control characters in user-supplied values.
-  - **Why it matters:** Attackers can forge log lines or break parsers.
-  - **Secure default:** Structured logging libraries that escape values.
+## 2. Data that must not be logged
 
-- [ ] **Logs shipped off-host and protected**: Logs go to a central store that app servers cannot modify or delete.
-  - **Why it matters:** An attacker on the box will try to clean up after themselves.
-  - **Secure default:** Write-only shipping to a SIEM or log account with restricted delete rights.
+- [ ] **No credentials**: Passwords (including failed attempts), OTPs, recovery codes, private keys.
 
-- [ ] **Retention defined**: Retention matches investigation needs and legal requirements.
-  - **Why it matters:** Many breaches are found months later.
-  - **Secure default:** At least 90 days hot and 1 year archived for security-relevant logs.
+- [ ] **No tokens**: Session IDs, access and refresh tokens, API keys, signed URLs, reset tokens. Log a hash or a short prefix if you need correlation.
 
-## Alerting and response
+- [ ] **No full payment data**: Card numbers, CVV, full bank account numbers.
 
-- [ ] **Alerts for high-signal events**: Brute force patterns, admin role grants, MFA disabled, new API keys, and spikes in 401/403/5xx.
-  - **Why it matters:** Logs nobody reads do not stop incidents.
-  - **Secure default:** Each alert has an owner, a severity, and a runbook link.
+- [ ] **PII minimized**: Prefer internal user IDs. Mask emails and phone numbers if needed.
 
-- [ ] **Alert noise reviewed**: Tune or remove alerts that fire often without action.
-  - **Why it matters:** Noisy alerts get ignored, including the real ones.
-  - **Secure default:** Monthly review of alert volume and false positive rate.
+- [ ] **Request and response bodies off by default**: If enabled for debugging, use field-level redaction and auto-expire the setting.
 
-- [ ] **Clock sync**: All hosts use NTP and log in UTC.
-  - **Why it matters:** Skewed timestamps make cross-system timelines unreliable.
-  - **Secure default:** Managed NTP on all hosts and containers.
+- [ ] **Redaction tested**: Unit tests feed known secret formats through the logger and assert they are masked.
+  - **How to verify:** Search a sample of production logs for `Authorization:`, `password`, `Bearer` tokens, and known key prefixes.
 
-- [ ] **Incident runbooks exist and are tested**: Common scenarios (leaked key, compromised account, data exposure) have written steps.
-  - **Why it matters:** People make fewer mistakes under pressure with a checklist.
-  - **Secure default:** Tabletop exercise at least once a year.
+- [ ] **Header logging filtered**: `Authorization`, `Cookie`, `Set-Cookie`, and `X-Api-Key` stripped in access logs at the proxy and app.
+
+## 3. Format and context
+
+- [ ] **Structured JSON logs**.
+
+- [ ] **Common schema across services**: Same field names for user ID, tenant ID, request ID, source IP. Consider OpenTelemetry semantic conventions or Elastic Common Schema.
+
+- [ ] **Event type field**: Each security event has a stable name (`auth.login.failure`, `authz.denied`, `user.role.granted`) for queries and alerts.
+
+- [ ] **Correlation and trace IDs**: W3C `traceparent` propagated across services, queues, and background jobs.
+
+- [ ] **Real client IP**: Taken from a trusted proxy header and only from proxies you control. Do not trust `X-Forwarded-For` from the internet.
+
+- [ ] **UTC timestamps in ISO 8601** with millisecond precision. NTP on all hosts.
+
+- [ ] **Tenant context**: Multi-tenant apps log tenant ID on every event.
+
+## 4. Integrity and protection
+
+- [ ] **Log injection prevented**: Structured logging escapes values. If you write text logs, strip CR, LF, and control characters from user input.
+
+- [ ] **Shipped off-host quickly**: Agents forward logs within seconds to a central store.
+
+- [ ] **Write-only from producers**: Apps and hosts can append but not modify or delete.
+
+- [ ] **Immutable storage for audit logs**: Object lock or WORM storage in a separate account.
+
+- [ ] **Access to logs restricted and logged**: Logs contain sensitive context. Reading them is audited.
+
+- [ ] **Log pipeline failures alert**: Missing logs from a service for N minutes raises an alert.
+  - **Why it matters:** Attackers disable logging. Broken agents look the same as a quiet system.
+
+## 5. Retention
+
+- [ ] **Retention policy written**: Per log type, based on investigation needs and regulation (PCI DSS requires 1 year, 3 months immediately available).
+
+- [ ] **Hot and archive tiers**: For example 90 days searchable, 1 year or more archived.
+
+- [ ] **Deletion follows the policy**: Logs past retention are deleted, especially those with personal data.
+
+## 6. Detection and alerting
+
+- [ ] **Brute force and stuffing**: Many failed logins for one account, or one source failing across many accounts.
+
+- [ ] **Account takeover signals**: Login from a new country followed by email or MFA change, password reset followed by payout detail change.
+
+- [ ] **Access control probing**: One user hitting many 403s or 404s on object routes in a short window.
+
+- [ ] **Privilege changes**: Any new admin, any role grant outside the approval workflow.
+
+- [ ] **Mass data access**: Exports or reads far above the user's normal baseline.
+
+- [ ] **Security control changes**: MFA disabled, SSO config changed, audit logging disabled, WAF rule disabled.
+
+- [ ] **Error rate spikes**: Sudden 5xx increases on specific routes, which may indicate injection attempts or DoS.
+
+- [ ] **Canary tokens**: Decoy credentials or records that alert when used.
+
+- [ ] **Each alert has an owner, a severity, and a runbook**.
+
+- [ ] **Alert quality reviewed monthly**: Tune or remove alerts that fire without action.
+
+## 7. Response readiness
+
+- [ ] **Runbooks**: Leaked credential, compromised user account, compromised admin, data exposure, malicious dependency, ransomware.
+
+- [ ] **On-call path**: Security alerts route to a person 24/7 for critical severity.
+
+- [ ] **Forensic readiness**: You can answer who, what, when, and from where for any sensitive action in the last 90 days.
+
+- [ ] **Tabletop exercises**: At least once a year, using real log queries.
+
+- [ ] **Post-incident review**: Every incident produces new detections or log fields where gaps were found.

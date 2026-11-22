@@ -1,75 +1,161 @@
 # Cloud Hardening Checklist
 
-Applies to AWS, Azure, and GCP. Use it when reviewing a new account, subscription, or project, and again before production launch.
+Applies to AWS, Azure, and GCP. Provider-specific names are in parentheses. Use for new accounts, before production launch, and in quarterly reviews. Map to the CIS Benchmark for your provider for formal coverage.
 
-## Accounts and organization
+## 1. Organization and account structure
 
-- [ ] **Separate accounts per environment**: Prod, staging, and dev live in separate accounts or projects under one organization.
+- [ ] **Separate accounts or projects per environment**: Prod, staging, dev, and sandbox are isolated.
   - **Why it matters:** A leaked dev credential should not reach prod data.
-  - **Secure default:** AWS Organizations, Azure management groups, or GCP folders with guardrail policies (SCPs, Azure Policy, Org Policy).
+  - **Secure default:** AWS Organizations OUs, Azure management groups, GCP folders.
 
-- [ ] **Root and break-glass accounts locked down**: Root has hardware MFA, no access keys, and is used only for documented break-glass steps.
-  - **Why it matters:** Root compromise means full account loss.
-  - **Secure default:** No root access keys. Alert on any root sign-in.
+- [ ] **Dedicated security and log archive accounts**: Logs and security tooling live in accounts that workload teams cannot administer.
 
-## Identity and access
+- [ ] **Organization guardrails**: Preventive policies at the org level (AWS SCPs, Azure Policy deny effects, GCP Organization Policy).
+  - **Secure default:** Deny disabling CloudTrail or audit logs, deny leaving the org, deny use of unapproved regions, deny public bucket ACLs.
 
-- [ ] **No long-lived keys for workloads**: Workloads use instance roles, managed identities, or workload identity federation.
-  - **Why it matters:** Static keys end up in repos, images, and laptops.
-  - **Secure default:** OIDC federation for CI. Rotate or delete any remaining keys.
+- [ ] **Root and global admin accounts locked down**: Hardware MFA, no access keys, credentials in a sealed break-glass process. Alerts on any use.
+  - **How to verify:** AWS IAM credential report shows no root access keys. Check sign-in alerts fire in a test.
 
-- [ ] **Least privilege IAM**: No `*:*` policies on humans or services. Review unused permissions quarterly.
-  - **Why it matters:** Broad roles turn a small bug into full account access.
-  - **Secure default:** Start from managed read-only roles and add specific actions. Use access analyzer tools to trim.
+- [ ] **Contact and billing info current**: Security contact set so the provider can reach you about abuse or compromise.
 
-- [ ] **Human access through SSO**: Engineers sign in with the corporate IdP and MFA, not local IAM users.
-  - **Why it matters:** Local users are rarely offboarded on time.
-  - **Secure default:** IAM Identity Center, Entra ID, or Google Workspace SSO with short sessions.
+- [ ] **Budget and anomaly alerts**: Cost anomaly detection enabled.
+  - **Why it matters:** Sudden spend is often the first sign of compromised credentials (crypto mining).
 
-## Storage and data
+## 2. Identity and access management
 
-- [ ] **Block public access on object storage**: Account-level public access block is on. Public buckets are exceptions with a ticket and an owner.
-  - **Why it matters:** Public buckets are one of the most common sources of data leaks.
-  - **Secure default:** S3 Block Public Access at account level, Azure `allowBlobPublicAccess=false`, GCP uniform bucket-level access with public access prevention.
+- [ ] **Human access through SSO with MFA**: No local IAM users for people.
+  - **Secure default:** AWS IAM Identity Center, Entra ID, Google Workspace / Cloud Identity.
 
-- [ ] **Encryption at rest with managed keys**: Databases, disks, buckets, and backups are encrypted. Sensitive data uses customer-managed keys with restricted key policies.
-  - **Why it matters:** Key policy is a second access control layer on top of IAM.
-  - **Secure default:** KMS / Key Vault / Cloud KMS keys per data class, with rotation on.
+- [ ] **No long-lived access keys**: Workloads use roles (instance profiles, IRSA / EKS Pod Identity, Azure managed identities, GCP workload identity). CI uses OIDC federation.
+  - **How to verify:** List access keys older than 90 days. The target is zero.
 
-- [ ] **Backups tested and protected**: Backups are immutable or in a separate account, and restores are tested.
-  - **Why it matters:** Ransomware and bad deploys both target backups.
-  - **Secure default:** Object lock or vault lock. Restore drill at least twice a year.
+- [ ] **Least privilege policies**: No `Action: "*"` with `Resource: "*"` on anything except break-glass roles. No `Owner` or `Editor` on service accounts.
+  - **Secure default:** Generate policies from access activity (IAM Access Analyzer policy generation, GCP IAM Recommender, Entra access reviews).
 
-## Network
+- [ ] **Unused permissions removed**: Review last-used data quarterly and remove unused roles, permissions, and principals.
 
-- [ ] **No management ports open to the internet**: SSH, RDP, and database ports are not reachable from `0.0.0.0/0`.
-  - **Why it matters:** Exposed admin ports get brute forced within hours.
-  - **Secure default:** SSM Session Manager, Azure Bastion, or IAP for admin access.
+- [ ] **Privilege escalation paths reviewed**: Restrict `iam:PassRole`, `iam:CreatePolicyVersion`, `iam:AttachUserPolicy`, role assumption chains, and their Azure/GCP equivalents (`Microsoft.Authorization/roleAssignments/write`, `iam.serviceAccounts.actAs`).
+  - **Why it matters:** These permissions let a low-privilege identity grant itself admin.
 
-- [ ] **Private endpoints for managed services**: Databases and internal APIs are reachable only from private networks.
-  - **Why it matters:** Public endpoints rely on a single credential for protection.
-  - **Secure default:** PrivateLink / Private Endpoint / Private Service Connect.
+- [ ] **Permission boundaries for delegated admins**: Teams that can create roles are limited by a permission boundary or equivalent.
 
-- [ ] **Egress controlled for sensitive workloads**: Outbound traffic goes through a NAT or proxy with allowlists where practical.
-  - **Why it matters:** Unrestricted egress makes data exfiltration and C2 easy.
-  - **Secure default:** Deny by default on sensitive subnets. Log egress.
+- [ ] **Cross-account trust scoped**: Role trust policies name specific principals and use `ExternalId` for third parties. No `Principal: "*"` without strong conditions.
+  - **How to verify:** IAM Access Analyzer external access findings.
 
-## Metadata and compute
+- [ ] **Service account keys disabled (GCP)**: Org policy `iam.disableServiceAccountKeyCreation` enforced.
 
-- [ ] **Instance metadata hardened**: IMDSv2 is required on AWS. Metadata access is limited on other providers.
-  - **Why it matters:** SSRF bugs often target metadata endpoints for credentials.
-  - **Secure default:** `HttpTokens=required`, hop limit 1 for containers that do not need it.
+## 3. Object storage
 
-- [ ] **Images patched and minimal**: Base images come from a hardened source and are rebuilt on a schedule.
-  - **Why it matters:** Old images carry known CVEs into every new instance.
-  - **Secure default:** Golden images or distroless containers, rebuilt at least monthly.
+- [ ] **Public access blocked at account level**: S3 Block Public Access (account), Azure storage `allowBlobPublicAccess=false`, GCP `storage.publicAccessPrevention` enforced.
+  - **Why it matters:** Public buckets remain a leading source of data exposure.
 
-## Guardrails and visibility
+- [ ] **Public buckets are documented exceptions**: Static website buckets are in a separate account or project, contain no private data, and are tagged with an owner.
 
-- [ ] **Audit logging on in every region**: CloudTrail, Azure Activity Log, and GCP Audit Logs are on, centralized, and protected from deletion.
-  - **Why it matters:** No logs means no investigation.
-  - **Secure default:** Org-wide trail to a separate log archive account.
+- [ ] **ACLs disabled**: S3 Object Ownership "Bucket owner enforced". GCP uniform bucket-level access.
 
-- [ ] **Posture checks running**: A CSPM or native tool (Security Hub, Defender for Cloud, Security Command Center) runs against a benchmark like CIS.
-  - **Why it matters:** Drift happens. Manual reviews miss it.
-  - **Secure default:** CIS benchmark enabled, findings routed to an owner with an SLA.
+- [ ] **Bucket policies deny insecure transport**: Condition `aws:SecureTransport = false` denied. Azure "secure transfer required".
+
+- [ ] **Versioning and object lock on critical data**: Protects against deletion and ransomware.
+
+- [ ] **Pre-signed and SAS URLs short-lived**: Minutes, not days. Azure SAS uses user delegation keys, not account keys.
+
+- [ ] **Storage account keys not used by apps (Azure)**: Disable shared key access where possible and use Entra ID auth.
+
+## 4. Data protection
+
+- [ ] **Encryption at rest everywhere**: Databases, volumes, snapshots, buckets, queues, and backups.
+
+- [ ] **Customer-managed keys for sensitive data**: Separate keys per data class or tenant. Key policies limit who can decrypt.
+
+- [ ] **Key rotation on**: Automatic rotation for KMS keys. Documented rotation for any app-level keys.
+
+- [ ] **Secrets in a secrets manager**: AWS Secrets Manager, Azure Key Vault, GCP Secret Manager. Not in env files, AMIs, container images, or Terraform state.
+  - **How to verify:** Secret scanning on infrastructure repos. Check Terraform state storage is encrypted and access-restricted.
+
+- [ ] **Snapshots and AMIs private**: No public snapshots, images, or database snapshots.
+  - **How to verify:** Provider config rules (AWS Config `ebs-snapshot-public-restorable-check`, `rds-snapshots-public-prohibited`).
+
+- [ ] **Backups isolated and tested**: Cross-account or vault-locked backups. Restore tested on a schedule.
+
+## 5. Network
+
+- [ ] **No admin ports open to the internet**: SSH (22), RDP (3389), database ports (3306, 5432, 1433, 27017, 6379, 9200) not open to `0.0.0.0/0` or `::/0`.
+  - **Secure default:** SSM Session Manager, Azure Bastion, GCP IAP TCP forwarding.
+
+- [ ] **Default VPC and default security groups unused**: Default security group has no rules.
+
+- [ ] **Private subnets for data stores**: Databases, caches, and internal services have no public IPs.
+
+- [ ] **Private endpoints for cloud services**: VPC endpoints / Private Link / Private Service Connect for S3, KMS, Secrets Manager, and similar.
+
+- [ ] **Egress filtering on sensitive workloads**: Outbound through NAT plus a proxy or firewall with domain allowlists.
+
+- [ ] **WAF in front of public apps**: Managed rule sets on load balancers or CDN, tuned in count mode first.
+
+- [ ] **DDoS protection on public endpoints**: Provider standard DDoS protection at minimum.
+
+- [ ] **VPC flow logs on**: At least for production VPCs, shipped to the log archive account.
+
+## 6. Compute
+
+- [ ] **IMDSv2 required (AWS)**: `HttpTokens=required` on all instances and launch templates. Hop limit 1 unless containers need it.
+  - **Why it matters:** IMDSv1 is easy to reach through SSRF.
+  - **How to verify:** AWS Config rule `ec2-imdsv2-check`.
+
+- [ ] **Metadata protection on other providers**: GCP and Azure metadata requires the `Metadata-Flavor` / `Metadata` header. Do not proxy these headers from user input.
+
+- [ ] **Hardened base images**: CIS-hardened or minimal images. Rebuilt and redeployed at least monthly.
+
+- [ ] **Patch management**: Automated OS patching (SSM Patch Manager, Azure Update Manager, OS Config).
+
+- [ ] **No secrets in user data or startup scripts**.
+
+- [ ] **Serverless functions least privilege**: One role per function. Timeouts and concurrency limits set. Function URLs require auth unless intentionally public.
+
+## 7. Containers and Kubernetes
+
+- [ ] **Managed control plane endpoint private or IP-restricted**.
+
+- [ ] **RBAC least privilege**: No `cluster-admin` for apps or CI. Namespaced roles.
+
+- [ ] **Pod Security Standards enforced**: `restricted` profile for app namespaces: non-root, no privilege escalation, read-only root filesystem, dropped capabilities, no host namespaces.
+
+- [ ] **Network policies**: Default deny between namespaces, then allow what is needed.
+
+- [ ] **Workload identity instead of node roles**: IRSA / EKS Pod Identity, Azure Workload Identity, GKE Workload Identity.
+
+- [ ] **Image provenance enforced**: Admission control allows only signed images from your registries.
+
+- [ ] **Secrets encrypted in etcd**: KMS envelope encryption enabled.
+
+## 8. Logging and detection
+
+- [ ] **Audit logs on in all regions and accounts**: Org-wide CloudTrail (management events at minimum, data events for sensitive buckets), Azure Activity Log and Entra sign-in logs, GCP Admin Activity and Data Access logs.
+
+- [ ] **Logs immutable**: Log bucket in the archive account with object lock and restricted delete.
+
+- [ ] **Threat detection on**: GuardDuty, Defender for Cloud, Security Command Center.
+
+- [ ] **Alerts on high-risk events**: Root sign-in, IAM policy changes, new access keys, security group opened to the world, audit logging disabled, KMS key scheduled for deletion.
+
+- [ ] **Config and posture monitoring**: AWS Config / Azure Policy compliance / Security Command Center posture against the CIS Benchmark.
+
+## 9. Infrastructure as code
+
+- [ ] **All infra in code**: Terraform, Bicep, CloudFormation, or Pulumi. Console changes are the exception and get reconciled.
+
+- [ ] **IaC scanning in CI**: Checkov, tfsec / Trivy config, or KICS on every PR.
+
+- [ ] **State files protected**: Remote state encrypted, versioned, access-restricted, with locking.
+
+- [ ] **Drift detection**: Scheduled plan or drift detection to catch manual changes.
+
+## 10. DNS and domains
+
+- [ ] **No dangling DNS records**: CNAMEs and alias records point only to resources you still own.
+  - **Why it matters:** Deleted cloud resources with live DNS records allow subdomain takeover.
+  - **How to verify:** Script that resolves every record in your zones and checks the target still exists in your accounts.
+
+- [ ] **Registrar locked with MFA**: Domain transfer lock on. Registrar account uses MFA.
+
+- [ ] **DNSSEC where supported**.

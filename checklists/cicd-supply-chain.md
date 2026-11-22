@@ -1,71 +1,170 @@
 # CI/CD and Supply Chain Hardening Checklist
 
-For build pipelines, source control, package dependencies, and release artifacts.
+Source control, build pipelines, dependencies, artifacts, and deployment. Aligned with SLSA, the OpenSSF Scorecard checks, and the OWASP Top 10 CI/CD Security Risks.
 
-## Source control
+## 1. Source control
 
-- [ ] **Protected default branch**: Require pull requests, at least one review, and passing checks before merge. No force pushes.
-  - **Why it matters:** A single compromised account should not be able to push straight to prod.
-  - **Secure default:** Branch protection or rulesets on `main`, with CODEOWNERS for sensitive paths.
+- [ ] **Branch protection or rulesets on the default branch**: Require PRs, at least one approving review from someone other than the author, passing status checks, and up-to-date branches. Block force pushes and deletion.
+  - **How to verify:** OpenSSF Scorecard "Branch-Protection" check, or repo settings review.
 
-- [ ] **MFA and SSO for the org**: Everyone with write access uses MFA. Org access goes through SSO where available.
-  - **Why it matters:** Developer accounts are a direct path to production code.
-  - **Secure default:** Org-wide MFA requirement. Remove inactive members.
+- [ ] **Admins not exempt**: Enforce rules for administrators too.
 
-- [ ] **Secret scanning and push protection on**: Commits with credentials are blocked or flagged.
-  - **Why it matters:** Leaked keys in git history get found and used fast.
-  - **Secure default:** Native secret scanning with push protection, plus a pre-commit hook such as gitleaks.
+- [ ] **CODEOWNERS on sensitive paths**: Auth code, crypto, CI workflows, IaC, and dependency manifests need review from the owning team.
 
-## Pipeline security
+- [ ] **Dismiss stale approvals**: New commits after approval require a fresh review.
 
-- [ ] **No long-lived cloud keys in CI**: Pipelines get cloud access through OIDC federation with short-lived tokens.
-  - **Why it matters:** CI secrets leak through logs, forks, and compromised actions.
-  - **Secure default:** GitHub Actions OIDC to AWS/Azure/GCP, scoped to repo and branch.
+- [ ] **Signed commits or verified pushes for release branches**: Require signed commits where your tooling supports it.
 
-- [ ] **Minimal token permissions**: The default workflow token is read-only. Jobs request only what they need.
-  - **Why it matters:** A compromised step inherits whatever the token can do.
-  - **Secure default:** `permissions: contents: read` at workflow level, raised per job.
+- [ ] **Org-wide MFA**: Required for all members and outside collaborators.
 
-- [ ] **Third-party actions pinned**: Pin actions and reusable workflows to a full commit SHA, not a moving tag.
-  - **Why it matters:** A retagged or hijacked action runs in your pipeline with your secrets.
-  - **Secure default:** SHA pinning, with Dependabot or Renovate to update pins.
+- [ ] **SSO enforced on the org**: Members access the org through your IdP.
 
-- [ ] **Untrusted PRs isolated**: Workflows on forked PRs do not get secrets. Avoid `pull_request_target` with checkout of PR code.
-  - **Why it matters:** Outside contributors can modify workflow steps in their PR.
-  - **Secure default:** `pull_request` trigger for untrusted code. Manual approval for first-time contributors.
+- [ ] **Least privilege repo roles**: Most engineers have write, few have admin. Review org owners quarterly.
 
-- [ ] **Self-hosted runners treated as sensitive**: Ephemeral runners, no reuse across repos, no runners on public repos.
-  - **Why it matters:** Persistent runners can be backdoored by one malicious job.
-  - **Secure default:** Ephemeral, autoscaled runners in an isolated network.
+- [ ] **Base permissions restricted**: Org base permission set to "read" or "none".
 
-## Dependencies
+- [ ] **Deploy keys and PATs reviewed**: Prefer GitHub Apps or fine-grained tokens with expiry. Remove unused deploy keys.
 
-- [ ] **Lockfiles committed and enforced**: Builds install from lockfiles (`npm ci`, `pip install --require-hashes`, `go.sum`).
-  - **Why it matters:** Floating versions pull in whatever was published last night.
-  - **Secure default:** Lockfile required in CI. Fail if it is out of date.
+- [ ] **Forking of private repos disabled** unless needed.
 
-- [ ] **Automated dependency updates and CVE checks**: Dependabot, Renovate, or similar opens update PRs. CI flags known vulnerable packages.
-  - **Why it matters:** Most dependency CVEs already have a fix. The gap is applying it.
-  - **Secure default:** Patch critical CVEs within 7 days, high within 30.
+## 2. Secrets in code
 
-- [ ] **Private package namespaces claimed**: Internal package names are reserved or scoped on public registries. Registry config points to the right source.
-  - **Why it matters:** Prevents dependency confusion where a public package shadows an internal one.
-  - **Secure default:** Scoped packages (`@org/name`) and a single proxied registry.
+- [ ] **Secret scanning on all repos**: Including history and private repos.
 
-## Build and release
+- [ ] **Push protection on**: Blocks commits that contain known secret formats.
 
-- [ ] **Reproducible, isolated builds**: Builds run in clean, ephemeral environments from source in version control.
-  - **Why it matters:** Builds on shared or long-lived machines can be tampered with.
-  - **Secure default:** Hosted or ephemeral runners. No manual steps between commit and artifact.
+- [ ] **Pre-commit hooks**: gitleaks or trufflehog in a pre-commit hook for local feedback.
 
-- [ ] **Artifacts signed with provenance**: Container images and release binaries are signed and carry build provenance.
-  - **Why it matters:** Lets deploy systems verify an artifact came from your pipeline.
-  - **Secure default:** Sigstore cosign signing, SLSA provenance, verification at deploy time.
+- [ ] **Leak response runbook**: A leaked secret is revoked and rotated first, then removed from history. Removing it from git alone is not enough.
 
-- [ ] **SBOM generated per release**: Each release ships a software bill of materials.
-  - **Why it matters:** When the next big library CVE drops, you can answer "are we affected" in minutes.
-  - **Secure default:** CycloneDX or SPDX SBOM attached to each release.
+## 3. Pipeline configuration
 
-- [ ] **Deploy approvals for production**: Prod deploys need an environment approval or a change ticket.
-  - **Why it matters:** Stops a compromised branch or token from deploying on its own.
-  - **Secure default:** Protected environments with required reviewers.
+- [ ] **Default token read-only**: `permissions: contents: read` at the top of every workflow. Jobs raise permissions only as needed.
+  - **How to verify:** Scorecard "Token-Permissions" check.
+
+- [ ] **Actions pinned to full commit SHA**: Including reusable workflows. Comment the version next to the SHA for readability.
+  - **Why it matters:** Tags can be moved to malicious commits by a compromised maintainer.
+  - **How to verify:** Scorecard "Pinned-Dependencies" check.
+
+- [ ] **Allowed actions restricted**: Org policy limits actions to verified creators and an allowlist.
+
+- [ ] **No `pull_request_target` with PR checkout**: If you need `pull_request_target`, never check out or run code from the PR head in that job.
+  - **Why it matters:** That combination runs untrusted code with write tokens and secrets.
+
+- [ ] **No untrusted input in `run:` expressions**: Do not interpolate `${{ github.event.issue.title }}`, PR titles, branch names, or commit messages directly into shell steps. Pass them through environment variables.
+  - **Why it matters:** Prevents script injection in workflows.
+  - **How to verify:** actionlint or zizmor in CI.
+
+- [ ] **Fork PRs need approval to run workflows**: Require approval for first-time and outside contributors.
+
+- [ ] **Workflow files protected by CODEOWNERS**: `.github/workflows/` changes need security or platform review.
+
+- [ ] **Caches not shared across trust levels**: Do not restore caches built by untrusted PRs into release jobs.
+
+## 4. Secrets in CI
+
+- [ ] **OIDC federation to cloud**: No static cloud keys stored as CI secrets. Trust policy scoped to repo, branch, and environment (`sub` claim).
+  - **Why it matters:** A trust policy that only checks the org lets any repo in the org assume the role.
+
+- [ ] **Environment-scoped secrets**: Production secrets only available to jobs in the protected `production` environment.
+
+- [ ] **Secrets not echoed**: Masking on. Do not print env, and do not run with shell tracing (`set -x`) around secrets.
+
+- [ ] **Short-lived credentials**: Prefer tokens minted per job over stored long-lived tokens.
+
+## 5. Runners
+
+- [ ] **Hosted or ephemeral runners**: Self-hosted runners are ephemeral (one job per runner) and autoscaled.
+
+- [ ] **No self-hosted runners on public repos**.
+
+- [ ] **Runner groups per trust level**: Production deploy runners separate from general build runners.
+
+- [ ] **Runner network restricted**: Egress allowlist where practical. No access to production networks from build runners.
+
+- [ ] **Harden-runner or egress monitoring**: Monitor outbound connections from build jobs.
+
+## 6. Dependencies
+
+- [ ] **Lockfiles committed**: `package-lock.json`, `pnpm-lock.yaml`, `poetry.lock`, `go.sum`, `Cargo.lock`, `Gemfile.lock`.
+
+- [ ] **Deterministic installs in CI**: `npm ci`, `pnpm install --frozen-lockfile`, `pip install --require-hashes`, `go mod verify`.
+
+- [ ] **Automated updates**: Dependabot or Renovate for dependencies, actions, and base images.
+
+- [ ] **Vulnerability scanning**: OSV-Scanner, `npm audit`, `pip-audit`, `govulncheck`, Trivy, or your SCA tool on every PR and nightly on the default branch.
+
+- [ ] **Patch SLAs**: Critical within 7 days, high within 30 days, tracked.
+
+- [ ] **Install scripts controlled**: Consider `npm ci --ignore-scripts` with explicit allowlisting for packages that need scripts.
+  - **Why it matters:** Malicious packages often run their payload at install time.
+
+- [ ] **New dependency review**: Adding a dependency needs a quick check: maintenance activity, download count, maintainers, license, and Scorecard score.
+
+- [ ] **Typosquat awareness**: Review package names carefully in PRs that add dependencies.
+
+- [ ] **Dependency confusion prevented**: Scoped or namespaced internal packages. Registry config sends internal scopes only to your private registry.
+
+- [ ] **Private registry proxy**: Builds pull from an internal proxy (Artifactory, Nexus, CodeArtifact) that can block known bad packages.
+
+- [ ] **License policy**: Block licenses your legal team does not allow.
+
+## 7. Static analysis and testing in CI
+
+- [ ] **SAST on every PR**: CodeQL, Semgrep, or equivalent. New high-severity findings block merge.
+
+- [ ] **IaC scanning**: Checkov, Trivy config, or KICS.
+
+- [ ] **Container image scanning**: Trivy or Grype on built images.
+
+- [ ] **Workflow linting**: actionlint and zizmor on `.github/workflows`.
+
+- [ ] **Security tests in the suite**: Authorization tests (user A cannot access user B's data) run with unit and integration tests.
+
+## 8. Build integrity
+
+- [ ] **Builds from version control only**: No manual uploads of artifacts.
+
+- [ ] **Ephemeral, isolated build environments**.
+
+- [ ] **Build provenance**: SLSA provenance generated by the build platform (for example GitHub artifact attestations or slsa-github-generator).
+
+- [ ] **Artifact signing**: Sigstore cosign for container images and binaries.
+
+- [ ] **SBOM per release**: CycloneDX or SPDX, generated in the pipeline (Syft, CycloneDX tools) and attached to the release.
+
+- [ ] **Minimal base images**: Distroless, Chainguard, or slim images. Pin base images by digest.
+
+- [ ] **Non-root containers**: `USER` set to a non-root UID in Dockerfiles.
+
+## 9. Artifact storage
+
+- [ ] **Registries private by default**.
+
+- [ ] **Immutable tags for releases**: Tag immutability on the registry.
+
+- [ ] **Write access limited to CI**: Humans cannot push to release repositories.
+
+- [ ] **Retention and cleanup**: Old, unsigned, and untested images are cleaned up.
+
+## 10. Deployment
+
+- [ ] **Protected production environment**: Required reviewers, wait timers if useful, and branch restrictions.
+
+- [ ] **Deploy only signed artifacts**: Admission control or deploy step verifies signature and provenance.
+
+- [ ] **GitOps or audited deploys**: Every deploy maps to a commit and an approver.
+
+- [ ] **Rollback tested**: You can roll back within minutes.
+
+- [ ] **Separate deploy identity**: The deploy role cannot change IAM or read unrelated secrets.
+
+## 11. Releasing open source
+
+- [ ] **Security policy**: `SECURITY.md` with a reporting address and expected response time.
+
+- [ ] **Private vulnerability reporting enabled** on the repo.
+
+- [ ] **Release process documented**: Who can release, how, and with what signing.
+
+- [ ] **Scorecard action**: Run OpenSSF Scorecard and fix low-scoring checks.
